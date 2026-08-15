@@ -1,0 +1,231 @@
+/**
+ * Google Places adapter — official Places API (Text Search + Place Details).
+ *
+ * Discovery pass: keyword/location text search returns companies with location
+ * and Google place types (cheap, ~$0.032/call). Place Details (~$0.017/call)
+ * returns website + business phone and serves as our phone/place verification
+ * (High Confidence — Google publishes this data, but it is not a "Verified"
+ * email-style check).
+ *
+ * Assumptions about response shapes (legacy JSON endpoints):
+ *   GET /maps/api/place/textsearch/json  → { results: [{ place_id, name,
+ *       formatted_address, geometry.location, types }], status }
+ *   GET /maps/api/place/details/json     → { result: { place_id, name,
+ *       formatted_address, formatted_phone_number, website, types } }
+ * The legacy endpoints still serve API keys; the adapter is isolated in this
+ * file so a switch to Places API v1 (field masks) is a one-file change.
+ */
+
+import type { Contact, Prospect, Provenance, SearchFilters, Signals } from "../types";
+import type { CompanyEnrichment, ProviderCtx, ProviderRuntime } from "./types";
+import { fetchJson, domainOf, now } from "./http";
+import { slug } from "./util";
+
+const TEXT_SEARCH = "https://maps.googleapis.com/maps/api/place/textsearch/json";
+const DETAILS = "https://maps.googleapis.com/maps/api/place/details/json";
+
+interface PlaceResult {
+  place_id?: string;
+  name?: string;
+  formatted_address?: string;
+  types?: string[];
+  business_status?: string;
+  geometry?: { location?: { lat?: number; lng?: number } };
+  website?: string;
+  formatted_phone_number?: string;
+  international_phone_number?: string;
+  rating?: number;
+  user_ratings_total?: number;
+}
+
+interface TextSearchResponse {
+  results?: PlaceResult[];
+  status?: string;
+  error_message?: string;
+}
+
+interface DetailsResponse {
+  result?: PlaceResult;
+  status?: string;
+}
+
+const INDUSTRY_QUERIES: Record<string, string[]> = {
+  "real estate": ["commercial real estate developer", "real estate development", "property management company"],
+  "construction": ["construction company", "general contractor", "commercial contractor"],
+  "hospitality": ["hotel management company", "hospitality group", "restaurant group"],
+  "franchise": ["franchise operator", "multi-unit franchise"],
+  "manufacturing": ["manufacturing company"],
+  "distribution": ["wholesale distribution company"],
+  "logistics": ["logistics company"],
+  "professional services": ["architecture firm", "engineering firm"],
+  "healthcare": ["senior living facility", "healthcare provider"],
+  "retail": ["retail chain", "retail company"],
+  "energy": ["energy company", "oil and gas company"],
+};
+
+function queryTerms(f: SearchFilters): string[] {
+  const base = f.industry ? (INDUSTRY_QUERIES[f.industry.toLowerCase()] ?? [f.industry]) : ["company", "business"];
+  if (f.subIndustry) {
+    const map: Record<string, string> = {
+      "commercial real estate development": "commercial real estate developer",
+      "real estate development": "real estate developer",
+      "property management": "property management company",
+      "hotel management": "hotel management company",
+      "general contracting": "general contractor",
+      "commercial contracting": "commercial contractor",
+      "multi-unit operators": "franchise operator",
+    };
+    const mapped = map[f.subIndustry.toLowerCase()];
+    if (mapped) return [mapped];
+  }
+  return base;
+}
+
+/** Best-effort city/state parse from a Google formatted address. */
+function parseAddress(addr?: string): { city: string; state: string; country: string } {
+  if (!addr) return { city: "", state: "", country: "US" };
+  const parts = addr.split(",").map((p) => p.trim());
+  let state = "";
+  let country = "US";
+  const last = parts[parts.length - 1] ?? "";
+  if (/^[A-Z]{2}(\s\d{5}(-\d{4})?)?$/.test(last)) {
+    country = "US";
+    state = last.slice(0, 2);
+  } else if (last && last !== "USA" && last.length <= 3) {
+    country = last;
+  }
+  // second-to-last is usually "ST ZIP" for US addresses
+  const penultimate = parts[parts.length - 2] ?? "";
+  if (!state) {
+    const m = penultimate.match(/\b([A-Z]{2})\s*\d{5}/);
+    if (m) state = m[1];
+  }
+  let city = "";
+  const cityCandidates = parts.slice(0, -2).reverse();
+  for (const c of cityCandidates) {
+    if (!/^\d/.test(c) && !/^[A-Z]{2}(\s\d+)?$/.test(c) && c !== "USA") {
+      city = c;
+      break;
+    }
+  }
+  return { city, state, country };
+}
+
+function signalsFromTypes(types: string[] = []): Partial<Signals> {
+  const t = new Set(types.map((x) => x.toLowerCase()));
+  const out: Partial<Signals> = {};
+  if (t.has("lodging") || t.has("restaurant")) out.hospitalityOperations = true;
+  if (t.has("real_estate_agency")) out.creActivity = true;
+  if (t.has("general_contractor")) out.constructionActivity = true;
+  return out;
+}
+
+export function makeGooglePlaces(apiKey: string, mock: boolean): ProviderRuntime {
+  const def: ProviderRuntime["def"] = {
+    id: "google-places",
+    name: "Google Places",
+    kind: "api",
+    status: mock ? "mock" : "active",
+    capabilities: ["discoverCompanies", "enrichCompany", "verifyPhone"],
+    envKeys: ["GOOGLE_PLACES_API_KEY"],
+    description:
+      "Discover companies by keyword/location from Google's official Places API; Place Details verify business phone and website. Cheap first pass — no employee/size data.",
+    mock,
+  };
+
+  const discoverCompanies = async (filters: SearchFilters, ctx: ProviderCtx): Promise<Prospect[]> => {
+    ctx.tracker.record("google-places", "discoverCompanies", 1, ctx.mock);
+    if (ctx.mock) return [];
+    const terms = queryTerms(filters);
+    const loc = filters.location;
+    const locationText = `${loc?.city ?? ""}${loc?.city && loc?.state ? ", " : ""}${loc?.state ?? ""}`.trim();
+    const query = [terms[0], locationText ? `in ${locationText}` : ""].filter(Boolean).join(" ");
+    const res = await fetchJson<TextSearchResponse>(`${TEXT_SEARCH}?query=${encodeURIComponent(query)}&key=${apiKey}`);
+    const results = res?.results ?? [];
+    const offset = filters.offset ?? 0;
+    return results
+      .filter((r) => r.name && r.business_status !== "CLOSED_PERMANENTLY" && r.business_status !== "CLOSED_TEMPORARILY")
+      .slice(offset, offset + 20)
+      .map((r, i) => {
+        const addr = parseAddress(r.formatted_address);
+        const signals = signalsFromTypes(r.types);
+        return {
+          id: `google-${r.place_id ?? slug(r.name ?? "")}-${i}`,
+          companyName: { value: r.name ?? "Unknown", source: "google-places", capturedAt: now(), confidence: 0.9, verificationStatus: "High Confidence" },
+          industry: { value: filters.industry ?? "Unknown", source: "google-places", capturedAt: now(), confidence: 0.5, verificationStatus: "Likely" },
+          location: { value: addr, source: "google-places", capturedAt: now(), confidence: addr.city || addr.state ? 0.8 : 0.3, verificationStatus: addr.city || addr.state ? "High Confidence" : "Likely" },
+          signals: {
+            multipleEntities: false,
+            multipleLocations: false,
+            creActivity: !!signals.creActivity,
+            constructionActivity: !!signals.constructionActivity,
+            hospitalityOperations: !!signals.hospitalityOperations,
+            projectVolume: false,
+            documentBurden: false,
+            departments: false,
+            workflowComplexity: false,
+            growthRate: false,
+            acquisitionActivity: false,
+            portfolioOwnership: false,
+            businessUnits: false,
+            operationalComplexity: false,
+            spreadsheetHeavy: false,
+            disconnectedSoftware: false,
+          },
+          contacts: [],
+          tags: r.place_id ? [`place:${r.place_id}`] : [],
+          sourceProvider: "google-places",
+          isSample: false,
+          mock: ctx.mock,
+          importedAt: now(),
+        } as Prospect;
+      });
+  };
+
+  const enrichCompany = async (p: Prospect, ctx: ProviderCtx): Promise<CompanyEnrichment | undefined> => {
+    ctx.tracker.record("google-places", "enrichCompany", 1, ctx.mock);
+    if (ctx.mock) return undefined;
+    const placeId = p.tags.find((t) => t.startsWith("place:"))?.slice(6);
+    const query = placeId
+      ? `place_id:${placeId}`
+      : `${p.companyName.value} ${p.location.value.city ?? ""} ${p.location.value.state ?? ""}`.trim();
+    const res = await fetchJson<DetailsResponse>(
+      `${DETAILS}?place_id=${encodeURIComponent(query)}&fields=place_id,name,formatted_address,formatted_phone_number,international_phone_number,website,types,business_status&key=${apiKey}`
+    );
+    const r = res?.result;
+    if (!r) return undefined;
+    const addr = parseAddress(r.formatted_address);
+    const out: CompanyEnrichment = {};
+    if (r.formatted_phone_number || r.international_phone_number) {
+      out.phone = {
+        value: r.international_phone_number || r.formatted_phone_number || "",
+        source: "google-places",
+        capturedAt: now(),
+        confidence: 0.95,
+        verificationStatus: "High Confidence",
+      };
+    }
+    if (r.website) {
+      out.website = { value: domainOf(r.website), source: "google-places", capturedAt: now(), confidence: 0.9, verificationStatus: "High Confidence" };
+    }
+    if (addr.city || addr.state) {
+      out.location = { value: addr, source: "google-places", capturedAt: now(), confidence: 0.8, verificationStatus: "High Confidence" };
+    }
+    const signals = signalsFromTypes(r.types);
+    if (Object.keys(signals).length) out.signals = signals;
+    return out;
+  };
+
+  const verifyPhone = async (p: Prospect, _contact: Contact, ctx: ProviderCtx): Promise<Provenance | undefined> => {
+    ctx.tracker.record("google-places", "verifyPhone", 1, ctx.mock);
+    if (ctx.mock) return undefined;
+    const placeId = p.tags.find((t) => t.startsWith("place:"))?.slice(6);
+    if (!placeId) return undefined;
+    const res = await fetchJson<DetailsResponse>(`${DETAILS}?place_id=${encodeURIComponent(placeId)}&fields=formatted_phone_number,international_phone_number,business_status&key=${apiKey}`);
+    const phone = res?.result?.international_phone_number || res?.result?.formatted_phone_number;
+    if (!phone) return undefined;
+    return { value: phone, source: "google-places", capturedAt: now(), confidence: 0.97, verificationStatus: "High Confidence" };
+  };
+
+  return { def, discoverCompanies, enrichCompany, verifyPhone };
+}
