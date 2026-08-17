@@ -182,7 +182,7 @@ function ProvidersContent() {
       <SectionHead
         eyebrow="Providers & Data"
         title="Plug in data sources — or import your own"
-        desc="Search broad, enrich narrow. CSV works today with zero API keys; paid providers activate automatically when their keys exist in Secrets. Dry-run mock providers let you exercise the full waterfall with no keys and no spend. Every row lands with honest provenance."
+        desc="Search broad, enrich narrow. CSV works today with zero API keys; paid providers activate automatically when their keys exist in Secrets. Every row lands with honest provenance."
         right={runtime?.mockMode ? <Badge variant="mock">Server dry-run mode on (ENABLE_PROVIDER_MOCKS)</Badge> : undefined}
       />
 
@@ -235,45 +235,15 @@ function ProvidersContent() {
         <p className="mt-4 text-xs leading-relaxed text-muted">
           Keys are read from environment secrets on the server — they never appear in the browser. Add <span className="font-mono text-faint">GOOGLE_PLACES_API_KEY</span>,{" "}
           <span className="font-mono text-faint">APOLLO_API_KEY</span>, <span className="font-mono text-faint">HUNTER_API_KEY</span>, or <span className="font-mono text-faint">PDL_API_KEY</span> and the provider activates on the next load. Set{" "}
-          <span className="font-mono text-faint">ENABLE_PROVIDER_MOCKS=true</span> or use the Settings dry-run switch to exercise the waterfall without keys.
+          <span className="font-mono text-faint">ENABLE_PROVIDER_MOCKS=true</span> to exercise the waterfall with labeled mock data and no keys.
         </p>
       </div>
 
       {/* Usage / cost */}
       {lastUsage && <UsageSection report={lastUsage} />}
 
-      {/* Cost map */}
-      <Card className="p-6">
-        <p className="eyebrow mb-3">Estimated per-call cost model (planning only)</p>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {(runtime?.costMap ? Object.entries(runtime.costMap) : []).map(([id, caps]) => (
-            <div key={id} className="rounded-xl border border-white/5 bg-white/[.02] p-3">
-              <p className="text-sm font-medium capitalize text-fg">{id.replace(/-/g, " ")}</p>
-              <ul className="mt-1.5 space-y-1 text-[11px] text-muted">
-                {Object.entries(caps).map(([cap, cost]) => (
-                  <li key={cap} className="flex justify-between gap-2">
-                    <span>{CAP_LABEL[cap] ?? cap}</span>
-                    <span className="font-mono text-faint">{formatCost(cost ?? 0)}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-        <p className="mt-3 text-[11px] leading-relaxed text-muted">
-          Defaults reflect public list pricing (Google Places ~$0.03/text search; Hunter ~$0.05 email find; PDL ~$0.025–0.05; Apollo ~1 credit ≈ $0.01). Override any value server-side with{" "}
-          <span className="font-mono text-faint">COST_&lt;PROVIDER&gt;_&lt;CAPABILITY&gt;</span> env vars. No money moves without a configured key.
-        </p>
-      </Card>
-
-      {/* Compliance note */}
-      <Card className="p-5">
-        <p className="flex items-center gap-2 text-sm font-medium text-fg"><Icon name="shield" className="h-4 w-4 text-success" /> Compliance guardrails</p>
-        <p className="mt-2 text-xs leading-relaxed text-muted">
-          Official APIs, licensed B2B data, public business data and your own CSVs only. No scraping, no CAPTCHA bypass, no mass unsolicited messaging.
-          Enrichment is gated by cost rules (Settings) — paid calls only for high-fit prospects, and mock data is never presented as real.
-        </p>
-      </Card>
+      {/* Compliance footnote */}
+      <p className="pt-1 text-center text-[11px] text-faint">No unsolicited outreach; official APIs and user CSVs only.</p>
     </div>
   );
 }
