@@ -1,19 +1,19 @@
 /**
  * Settings — owner-only: team/agent roster management, pipeline behavior (fit
- * threshold, cost-control rules for enrichment), dry-run (mock provider) mode,
- * and LLM parser adapter status. All stored locally for the V1; the server
- * reports what's actually configured (keys stay on the server).
+ * threshold, cost-control rules for enrichment), and LLM parser adapter status.
+ * All stored locally for the V1; the server reports what's actually configured
+ * (keys stay on the server).
  */
 
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { Badge, Card, Icon, Modal, SectionHead } from "~/components/ui";
 import { RoleNotAllowed } from "~/components/AuthGate";
 import { guardModule } from "~/lib/authServer";
 import { createAgent, deleteAgent, listAgents, resetAgentPassword, updateAgent, type SanitizedAgent } from "~/lib/agentsServer";
 import { DEFAULT_COST_RULES, DEFAULT_FIT_THRESHOLD } from "~/lib/fitScore";
-import { loadJson, saveJson, getDryRun, setDryRun } from "~/lib/store";
+import { loadJson, saveJson } from "~/lib/store";
 import { getRuntimeConfig, type RuntimeConfig } from "~/lib/runtime";
 import { getWebhookConfig, getSecretsStatus, type WebhookConfigResult } from "~/lib/webhookServer";
 
@@ -88,6 +88,16 @@ function ConfigRow({ label, value, copyText }: { label: string; value: string; c
         {copyText !== undefined && <CopyButton text={copyText} />}
       </div>
     </div>
+  );
+}
+
+/** Collapsed-by-default expander for secondary details (native <details>). */
+function Expander({ summary, children }: { summary: string; children: ReactNode }) {
+  return (
+    <details className="mt-4 rounded-xl border border-white/5 bg-white/[.02] px-4 py-3">
+      <summary className="cursor-pointer text-xs font-medium text-muted transition hover:text-fg">{summary}</summary>
+      <div className="mt-3 space-y-3">{children}</div>
+    </details>
   );
 }
 
@@ -503,7 +513,6 @@ function SettingsPage() {
 function SettingsContent() {
   const [fitThreshold, setFitThreshold] = useState(() => loadJson("op-leados-settings", { fitThreshold: DEFAULT_FIT_THRESHOLD }).fitThreshold);
   const [costRules, setCostRules] = useState(() => loadJson("op-leados-costrules", DEFAULT_COST_RULES));
-  const [dryRun, setDryRunState] = useState(getDryRun());
   const [runtime, setRuntime] = useState<RuntimeConfig | null>(null);
   const [webhook, setWebhook] = useState<WebhookConfigResult | null>(null);
   const [secrets, setSecrets] = useState<{ crmApiKeyPresent: boolean; leadosKeyOverride: boolean } | null>(null);
@@ -518,7 +527,6 @@ function SettingsContent() {
   const persist = () => {
     saveJson("op-leados-settings", { fitThreshold });
     saveJson("op-leados-costrules", costRules);
-    setDryRun(dryRun);
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
   };
@@ -528,7 +536,7 @@ function SettingsContent() {
       <SectionHead
         eyebrow="Settings"
         title="Pipeline behavior & cost control"
-        desc="Search broad, enrich narrow. These rules decide what gets scored, what qualifies, and when paid enrichment is allowed to run — including dry-run mode to test the waterfall without spending."
+        desc="Search broad, enrich narrow. These rules decide what gets scored, what qualifies, and when paid enrichment is allowed to run."
       />
 
       <AgentsCard />
@@ -558,22 +566,6 @@ function SettingsContent() {
       </Card>
 
       <Card className="p-6">
-        <p className="eyebrow mb-3">Dry run (mock providers)</p>
-        <div className="flex items-center gap-3">
-          <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-white/10 bg-white/[.03] px-3 py-2 text-sm text-fg">
-            <input type="checkbox" checked={dryRun} onChange={(e) => { setDryRunState(e.target.checked); setSaved(false); }} className="accent-[#8b5cf6]" />
-            Dry run — mock providers, no real API calls
-          </label>
-          <Badge variant="mock">mock data clearly labeled</Badge>
-        </div>
-        <p className="mt-3 text-xs leading-relaxed text-muted">
-          With dry run on, every provider serves clearly-labeled canned responses (badge <Badge variant="mock" className="text-[10px]">mock</Badge>, provenance source{" "}
-          <span className="font-mono text-faint">mock:&lt;provider&gt;</span>) so the full waterfall — discovery, company enrichment, decision makers, email find/verify, phone verify, cost rules, dedupe and stop rules — runs end to end with zero keys and zero spend.
-          The server can also force this via <span className="font-mono text-faint">ENABLE_PROVIDER_MOCKS=true</span>. Mock data is never presented as real.
-        </p>
-      </Card>
-
-      <Card className="p-6">
         <p className="eyebrow mb-3">AI parsing adapter</p>
         <div className="flex items-center gap-3">
           {runtime?.llm.configured ? (
@@ -588,10 +580,7 @@ function SettingsContent() {
       </Card>
 
       <Card className="p-6">
-        <p className="eyebrow mb-1">CRM → Lead OS integration</p>
-        <p className="mb-4 text-xs leading-relaxed text-muted">
-          When a deal closes in the CRM, the CRM posts it to this webhook so Lead OS marks the prospect won and feeds real outcomes into insights. Events are idempotent on <span className="font-mono text-faint">dealId</span> — repeats update, never duplicate, so re-firing a missed webhook is safe. If an event seems to have been lost, re-fire it and check the public health endpoint below: it reports the last deal received, or no record at all (no webhook received since deployment). Unmatched deals are stored flagged (<span className="font-mono text-faint">matched: false</span>), never dropped.
-        </p>
+        <p className="eyebrow mb-3">CRM → Lead OS integration</p>
         {webhook && webhook.allowed ? (
           <div className="space-y-3">
             <ConfigRow label="Webhook URL" value={webhook.url} copyText={webhook.url} />
@@ -609,23 +598,28 @@ function SettingsContent() {
                 <CopyButton text={webhook.apiKey} />
               </div>
             </div>
-            <div>
-              <p className="text-[11px] uppercase tracking-label text-faint">Payload example (JSON)</p>
-              <pre className="mt-1 overflow-x-auto rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-fg/90">
+            <Expander summary="Payload example & integration notes">
+              <p className="text-xs leading-relaxed text-muted">
+                When a deal closes in the CRM, the CRM posts it to this webhook so Lead OS marks the prospect won and feeds real outcomes into insights. Events are idempotent on <span className="font-mono text-faint">dealId</span> — repeats update, never duplicate, so re-firing a missed webhook is safe. If an event seems to have been lost, re-fire it and check the public health endpoint: it reports the last deal received, or no record at all (no webhook received since deployment). Unmatched deals are stored flagged (<span className="font-mono text-faint">matched: false</span>), never dropped.
+              </p>
+              <div>
+                <p className="text-[11px] uppercase tracking-label text-faint">Payload example (JSON)</p>
+                <pre className="mt-1 overflow-x-auto rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-fg/90">
 {JSON.stringify(webhook.payloadExample, null, 2)}
-              </pre>
-            </div>
+                </pre>
+              </div>
+              <p className="text-[11px] leading-relaxed text-faint">
+                Key generated once and stored server-side (<span className="font-mono">data/deals/apikey.txt</span>, 48 hex chars). Set <span className="font-mono">OPERION_LEADOS_API_KEY</span> in Secrets to override — that value becomes authoritative. The key is never logged and never leaves this page.
+              </p>
+              {secrets && (
+                <p className="text-[11px] text-faint">
+                  Server secrets check — <span className="font-mono">OPERION_CRM_API_KEY</span> present: {secrets.crmApiKeyPresent ? "yes" : "no"} · webhook key override active: {secrets.leadosKeyOverride ? "yes" : "no"}
+                </p>
+              )}
+            </Expander>
           </div>
         ) : (
           <p className="text-xs text-muted">Webhook config is owner-only — sign in as owner to view.</p>
-        )}
-        <p className="mt-3 text-[11px] leading-relaxed text-faint">
-          Key generated once and stored server-side (<span className="font-mono">data/deals/apikey.txt</span>, 48 hex chars). Set <span className="font-mono">OPERION_LEADOS_API_KEY</span> in Secrets to override — that value becomes authoritative. The key is never logged and never leaves this page.
-        </p>
-        {secrets && (
-          <p className="mt-2 text-[11px] text-faint">
-            Server secrets check — <span className="font-mono">OPERION_CRM_API_KEY</span> present: {secrets.crmApiKeyPresent ? "yes" : "no"} · webhook key override active: {secrets.leadosKeyOverride ? "yes" : "no"}
-          </p>
         )}
       </Card>
 
@@ -633,7 +627,7 @@ function SettingsContent() {
         <p className="flex items-center gap-2 text-fg"><Icon name="eye" className="h-4 w-4 text-accent-light" /> Notes</p>
         <ul className="mt-2 list-inside list-disc space-y-1 text-xs">
           <li>Prospects stay in this engine until pushed to Operion CRM — the CRM remains the system of record.</li>
-          <li>Threshold, cost rules and dry run are stored per-browser for V1; they move server-side with multi-user settings.</li>
+          <li>Threshold and cost rules are stored per-browser for V1; they move server-side with multi-user settings.</li>
           <li>Mock data is always labeled mock — real prospects come from your CSV imports, provider discovery, and website intelligence.</li>
         </ul>
       </Card>
