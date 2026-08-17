@@ -1,15 +1,17 @@
 /**
- * Settings — pipeline behavior: fit threshold, cost-control rules for
- * enrichment, dry-run (mock provider) mode, and LLM parser adapter status.
- * All stored locally for the V1; the server reports what's actually configured
- * (keys stay on the server).
+ * Settings — owner-only: team/agent roster management, pipeline behavior (fit
+ * threshold, cost-control rules for enrichment), dry-run (mock provider) mode,
+ * and LLM parser adapter status. All stored locally for the V1; the server
+ * reports what's actually configured (keys stay on the server).
  */
 
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { Badge, Card, Icon, SectionHead } from "~/components/ui";
+import type { FormEvent } from "react";
+import { Badge, Card, Icon, Modal, SectionHead } from "~/components/ui";
 import { RoleNotAllowed } from "~/components/AuthGate";
 import { guardModule } from "~/lib/authServer";
+import { createAgent, deleteAgent, listAgents, resetAgentPassword, updateAgent, type SanitizedAgent } from "~/lib/agentsServer";
 import { DEFAULT_COST_RULES, DEFAULT_FIT_THRESHOLD } from "~/lib/fitScore";
 import { loadJson, saveJson, getDryRun, setDryRun } from "~/lib/store";
 import { getRuntimeConfig, type RuntimeConfig } from "~/lib/runtime";
@@ -89,6 +91,402 @@ function ConfigRow({ label, value, copyText }: { label: string; value: string; c
   );
 }
 
+/* ------------------------- Team / Agents card ------------------------------ */
+
+const ROW_ACTION =
+  "rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-muted transition hover:text-fg";
+
+/** Owner-managed agent roster — add/remove accounts as people get hired.
+ *  Server fns double-guard ownership; this page is already owner-only. */
+function AgentsCard() {
+  const [agents, setAgents] = useState<SanitizedAgent[] | null>(null);
+  const [loadError, setLoadError] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [addName, setAddName] = useState("");
+  const [addUsername, setAddUsername] = useState("");
+  const [addPassword, setAddPassword] = useState("");
+  const [showAddPw, setShowAddPw] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [resetId, setResetId] = useState<string | null>(null);
+  const [resetPw, setResetPw] = useState("");
+  const [showResetPw, setShowResetPw] = useState(false);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  const refresh = async () => {
+    try {
+      const res = await listAgents();
+      if (!res.allowed) {
+        setLoadError("Only the owner can manage agents.");
+        setAgents([]);
+        return;
+      }
+      setAgents(res.agents);
+      setLoadError("");
+    } catch {
+      setLoadError("Couldn't load the agent roster.");
+      setAgents([]);
+    }
+  };
+  useEffect(() => {
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const flash = (msg: string) => {
+    setNotice(msg);
+    window.setTimeout(() => setNotice(""), 3200);
+  };
+
+  const submitAdd = async (e: FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await createAgent({ data: { name: addName, username: addUsername, password: addPassword } });
+      if (!res.allowed) {
+        setError("Only the owner can add agents.");
+        return;
+      }
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      setAddName("");
+      setAddUsername("");
+      setAddPassword("");
+      setAddOpen(false);
+      await refresh();
+      flash(`Agent "${res.agent?.username}" created — they can sign in at /login.`);
+    } catch {
+      setError("Couldn't reach the server — try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doRename = async (id: string) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await updateAgent({ data: { id, name: renameValue } });
+      if (!res.allowed) {
+        setError("Only the owner can manage agents.");
+        return;
+      }
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      setRenamingId(null);
+      await refresh();
+      flash("Agent renamed.");
+    } catch {
+      setError("Couldn't reach the server — try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doToggle = async (a: SanitizedAgent) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await updateAgent({ data: { id: a.id, active: !a.active } });
+      if (!res.allowed) {
+        setError("Only the owner can manage agents.");
+        return;
+      }
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      await refresh();
+      flash(a.active ? `Agent "${a.username}" disabled — they can no longer sign in.` : `Agent "${a.username}" enabled.`);
+    } catch {
+      setError("Couldn't reach the server — try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doReset = async () => {
+    if (!resetId || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await resetAgentPassword({ data: { id: resetId, password: resetPw } });
+      if (!res.allowed) {
+        setError("Only the owner can manage agents.");
+        return;
+      }
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      setResetId(null);
+      setResetPw("");
+      await refresh();
+      flash("Password reset.");
+    } catch {
+      setError("Couldn't reach the server — try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doDelete = async () => {
+    if (!deleteId || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await deleteAgent({ data: { id: deleteId } });
+      if (!res.allowed) {
+        setError("Only the owner can manage agents.");
+        return;
+      }
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      setDeleteId(null);
+      await refresh();
+      flash("Agent removed from the roster.");
+    } catch {
+      setError("Couldn't reach the server — try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleting = agents?.find((a) => a.id === deleteId) ?? null;
+  const resetting = agents?.find((a) => a.id === resetId) ?? null;
+
+  return (
+    <Card className="p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="eyebrow">Team / Agents</p>
+          <p className="mt-1 text-xs leading-relaxed text-muted">
+            Add agent accounts as you hire. Agents sign in at <span className="font-mono text-faint">/login</span> with their
+            username and never see Settings or Providers &amp; Data — those stay owner-only.
+          </p>
+        </div>
+        {!addOpen && (
+          <button type="button" className="btn-primary" onClick={() => setAddOpen(true)} disabled={busy}>
+            <span className="mr-1.5">+</span>Add agent
+          </button>
+        )}
+      </div>
+
+      {notice && <p className="mt-3 text-xs text-success">{notice}</p>}
+      {error && <p className="mt-3 text-xs text-danger">{error}</p>}
+      {loadError && <p className="mt-3 text-xs text-danger">{loadError}</p>}
+
+      {addOpen && (
+        <form onSubmit={(e) => void submitAdd(e)} className="mt-4 space-y-3 rounded-xl border border-white/10 bg-white/[.03] p-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label htmlFor="ag-name" className="eyebrow mb-1.5 block">Name</label>
+              <input
+                id="ag-name"
+                className="input-dark"
+                value={addName}
+                onChange={(e) => setAddName(e.target.value)}
+                placeholder="e.g. Sam Rivera"
+                autoFocus
+              />
+            </div>
+            <div>
+              <label htmlFor="ag-username" className="eyebrow mb-1.5 block">Username</label>
+              <input
+                id="ag-username"
+                className="input-dark"
+                value={addUsername}
+                onChange={(e) => setAddUsername(e.target.value)}
+                placeholder="e.g. sam.rivera"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+            </div>
+            <div>
+              <label htmlFor="ag-password" className="eyebrow mb-1.5 block">Password</label>
+              <div className="relative">
+                <input
+                  id="ag-password"
+                  type={showAddPw ? "text" : "password"}
+                  className="input-dark w-full pr-9"
+                  value={addPassword}
+                  onChange={(e) => setAddPassword(e.target.value)}
+                  placeholder="min 8 characters"
+                  autoComplete="new-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAddPw((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted hover:text-fg"
+                  aria-label={showAddPw ? "Hide password" : "Show password"}
+                >
+                  <Icon name="eye" className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+          <p className="text-[11px] text-faint">
+            Username: 2–40 characters, lowercase letters, numbers, dots, dashes, underscores. The username{" "}
+            <span className="font-mono">owner</span> is reserved. Passwords are stored as salted hashes — never plaintext.
+          </p>
+          <div className="flex items-center gap-2">
+            <button type="submit" disabled={busy || !addName.trim() || !addUsername.trim() || !addPassword} className="btn-primary">
+              {busy ? "Creating…" : "Create agent"}
+            </button>
+            <button type="button" className="btn-ghost" onClick={() => setAddOpen(false)} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {agents === null ? (
+        <p className="py-6 text-center text-xs text-muted">Loading roster…</p>
+      ) : agents.length === 0 && !loadError ? (
+        <div className="mt-4 rounded-xl border border-white/5 bg-white/[.02] px-5 py-8 text-center">
+          <p className="text-sm font-medium text-fg">No agents yet — add one when you hire.</p>
+          <p className="mt-1.5 text-xs text-muted">Agent accounts appear here once created; they can then sign in at /login.</p>
+        </div>
+      ) : (
+        <div className="mt-4 divide-y divide-white/5">
+          {agents.map((a) => (
+            <div key={a.id} className="flex flex-wrap items-center gap-3 py-3">
+              <div className="min-w-0 flex-1">
+                {renamingId === a.id ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      className="input-dark w-52 px-2 py-1 text-sm"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      autoFocus
+                    />
+                    <button type="button" className="btn-primary px-2.5 py-1 text-[11px]" onClick={() => void doRename(a.id)} disabled={busy}>
+                      Save
+                    </button>
+                    <button type="button" className="btn-ghost px-2.5 py-1 text-[11px]" onClick={() => setRenamingId(null)} disabled={busy}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-sm font-medium text-fg">{a.name}</p>
+                )}
+                <p className="mt-0.5 font-mono text-xs text-muted">
+                  @{a.username} · created {new Date(a.createdAt).toLocaleDateString()}
+                </p>
+              </div>
+              {a.active ? <Badge variant="green">Active</Badge> : <Badge variant="amber">Disabled</Badge>}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  className={ROW_ACTION}
+                  onClick={() => {
+                    setRenamingId(a.id);
+                    setRenameValue(a.name);
+                  }}
+                >
+                  Rename
+                </button>
+                <button
+                  type="button"
+                  className={ROW_ACTION}
+                  onClick={() => {
+                    setResetId(a.id);
+                    setResetPw("");
+                    setShowResetPw(false);
+                  }}
+                >
+                  Reset password
+                </button>
+                <button type="button" className={ROW_ACTION} onClick={() => void doToggle(a)} disabled={busy}>
+                  {a.active ? "Disable" : "Enable"}
+                </button>
+                <button type="button" className={`${ROW_ACTION} text-danger`} onClick={() => setDeleteId(a.id)} disabled={busy}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Reset-password modal */}
+      <Modal open={resetId !== null} onClose={() => setResetId(null)} title={`Reset password — ${resetting?.name ?? ""}`}>
+        <p className="text-xs leading-relaxed text-muted">
+          Set a new password for <span className="font-mono text-faint">@{resetting?.username ?? ""}</span>. The old one stops working
+          immediately.
+        </p>
+        <div className="mt-4">
+          <label htmlFor="rp-password" className="eyebrow mb-1.5 block">New password</label>
+          <div className="relative">
+            <input
+              id="rp-password"
+              type={showResetPw ? "text" : "password"}
+              className="input-dark w-full pr-9"
+              value={resetPw}
+              onChange={(e) => setResetPw(e.target.value)}
+              placeholder="min 8 characters"
+              autoComplete="new-password"
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={() => setShowResetPw((v) => !v)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted hover:text-fg"
+              aria-label={showResetPw ? "Hide password" : "Show password"}
+            >
+              <Icon name="eye" className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        <div className="mt-5 flex items-center gap-2">
+          <button type="button" className="btn-primary" onClick={() => void doReset()} disabled={busy || resetPw.length < 8}>
+            {busy ? "Saving…" : "Set new password"}
+          </button>
+          <button type="button" className="btn-ghost" onClick={() => setResetId(null)} disabled={busy}>
+            Cancel
+          </button>
+        </div>
+      </Modal>
+
+      {/* Delete-confirm modal */}
+      <Modal open={deleteId !== null} onClose={() => setDeleteId(null)} title={`Remove agent?`}>
+        <p className="text-xs leading-relaxed text-muted">
+          Remove <span className="font-medium text-fg">{deleting?.name}</span> (
+          <span className="font-mono text-faint">@{deleting?.username}</span>) from the roster? This is permanent — they will no longer
+          be able to sign in, and their saved password hash is deleted.
+        </p>
+        <div className="mt-5 flex items-center gap-2">
+          <button
+            type="button"
+            className="rounded-lg border border-danger/50 bg-danger/15 px-4 py-2 text-sm font-semibold text-danger transition hover:bg-danger/25"
+            onClick={() => void doDelete()}
+            disabled={busy}
+          >
+            {busy ? "Removing…" : "Remove agent"}
+          </button>
+          <button type="button" className="btn-ghost" onClick={() => setDeleteId(null)} disabled={busy}>
+            Keep
+          </button>
+        </div>
+      </Modal>
+    </Card>
+  );
+}
+
 function SettingsPage() {
   const [guard, setGuard] = useState<GuardState>("loading");
   useEffect(() => {
@@ -132,6 +530,8 @@ function SettingsContent() {
         title="Pipeline behavior & cost control"
         desc="Search broad, enrich narrow. These rules decide what gets scored, what qualifies, and when paid enrichment is allowed to run — including dry-run mode to test the waterfall without spending."
       />
+
+      <AgentsCard />
 
       <Card className="p-6">
         <p className="eyebrow mb-2">Fit threshold</p>
