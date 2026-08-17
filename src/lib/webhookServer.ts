@@ -35,7 +35,7 @@ export const getWebhookConfig = createServerFn({ method: "GET" }).handler(async 
     import("./ownerGuard"),
     import("./webhook"),
   ]);
-  if (!allowedModule("settings")) return { allowed: false };
+  if (!(await allowedModule("settings"))) return { allowed: false };
   const info = getWebhookConfigInfo();
   return { allowed: true, ...info, apiKey: getApiKey() };
 });

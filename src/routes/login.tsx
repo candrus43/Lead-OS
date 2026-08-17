@@ -1,6 +1,8 @@
 /**
  * Login — Operion CRM-style sign-in: aurora backdrop, glass card, gradient
- * headline, icon-tile logo. Usernames are fixed: "owner" / "agent".
+ * headline, icon-tile logo. Owner signs in with username "owner"; agent
+ * accounts are created by the owner (Settings → Team / Agents) and sign in
+ * with their own username.
  * On success the app hard-navigates to the page the user tried to open
  * (?next=), which makes AuthGate re-read the fresh HttpOnly session cookie.
  */
@@ -88,8 +90,8 @@ function LoginPage() {
               <Icon name="shield" className="h-4 w-4" /> Logins aren&apos;t configured
             </p>
             <p className="mt-2 text-xs leading-relaxed text-muted">
-              Set <span className="font-mono text-faint">OPERION_OWNER_PASSWORD</span> and{" "}
-              <span className="font-mono text-faint">OPERION_AGENT_PASSWORD</span> to enable sign-in.
+              Set <span className="font-mono text-faint">OPERION_OWNER_PASSWORD</span> to enable sign-in — then add agent
+              accounts from <span className="font-mono text-faint">Settings → Team / Agents</span>.
             </p>
             <Link to="/" className="btn-ghost mt-4 w-full">Back to the app</Link>
           </div>
@@ -102,7 +104,7 @@ function LoginPage() {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="username"
-                placeholder="owner or agent"
+                placeholder="your username"
                 className="input-dark"
                 autoFocus
               />
@@ -124,7 +126,7 @@ function LoginPage() {
               {busy ? "Signing in…" : "Sign in"}
             </button>
             <p className="text-center text-[11px] text-faint">
-              Internal tool · Fixed accounts: <span className="font-mono">owner</span> and <span className="font-mono">agent</span>
+              Internal tool · Sign in with your Operion Lead OS credentials
             </p>
           </form>
         )}

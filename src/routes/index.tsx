@@ -228,8 +228,8 @@ function Dashboard() {
           <p className="flex items-center gap-2.5 text-xs text-warn">
             <Icon name="shield" className="h-4 w-4 shrink-0" />
             <span>
-              Auth not configured — add <span className="rounded-md bg-black/30 px-1.5 py-0.5 font-mono text-[11px]">OPERION_OWNER_PASSWORD</span> /{" "}
-              <span className="rounded-md bg-black/30 px-1.5 py-0.5 font-mono text-[11px]">OPERION_AGENT_PASSWORD</span> to enable logins.
+              Auth not configured — set <span className="rounded-md bg-black/30 px-1.5 py-0.5 font-mono text-[11px]">OPERION_OWNER_PASSWORD</span> to
+              enable logins (agent accounts are managed from Settings → Team / Agents once sign-in is on).
             </span>
           </p>
           <button
