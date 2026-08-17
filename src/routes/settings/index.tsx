@@ -190,12 +190,13 @@ function SettingsContent() {
       <Card className="p-6">
         <p className="eyebrow mb-1">CRM → Lead OS integration</p>
         <p className="mb-4 text-xs leading-relaxed text-muted">
-          When a deal closes in the CRM, the CRM posts it to this webhook so Lead OS marks the prospect won and feeds real outcomes into insights. Events are idempotent on <span className="font-mono text-faint">dealId</span> — repeats update, never duplicate. Unmatched deals are stored flagged (<span className="font-mono text-faint">matched: false</span>), never dropped.
+          When a deal closes in the CRM, the CRM posts it to this webhook so Lead OS marks the prospect won and feeds real outcomes into insights. Events are idempotent on <span className="font-mono text-faint">dealId</span> — repeats update, never duplicate, so re-firing a missed webhook is safe. If an event seems to have been lost, re-fire it and check the public health endpoint below: it reports the last deal received, or no record at all (no webhook received since deployment). Unmatched deals are stored flagged (<span className="font-mono text-faint">matched: false</span>), never dropped.
         </p>
         {webhook && webhook.allowed ? (
           <div className="space-y-3">
             <ConfigRow label="Webhook URL" value={webhook.url} copyText={webhook.url} />
             <ConfigRow label="Method & auth header" value={`POST · ${webhook.headerFormat}`} copyText={webhook.headerFormat} />
+            <ConfigRow label="Health check (public, GET)" value={webhook.healthUrl} copyText={webhook.healthUrl} />
             <div>
               <p className="flex items-center gap-2 text-[11px] uppercase tracking-label text-faint">
                 API key
