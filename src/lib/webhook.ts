@@ -32,6 +32,11 @@ import type { DealMatchBy, Prospect, Provenance } from "./types";
 
 export const WEBHOOK_PATH = "/api/webhooks/deal-closed";
 /**
+ * Public health check for the webhook loop — GET, no auth. Any team can hit
+ * this in one call to see whether the CRM → Lead OS loop is receiving events.
+ */
+export const WEBHOOK_HEALTH_PATH = "/api/webhooks/health";
+/**
  * Public base URL of the working site — the CRM-facing webhook URL is
  * <this> + WEBHOOK_PATH. Keep in sync with the site label.
  */
@@ -519,6 +524,8 @@ export interface WebhookConfigInfo {
   payloadExample: DealClosedPayloadExample;
   keySource: "generated" | "env";
   keySet: boolean;
+  /** Public health URL (GET, no auth) — reflects the persisted store. */
+  healthUrl: string;
 }
 
 export function getWebhookConfigInfo(): WebhookConfigInfo {
@@ -529,6 +536,7 @@ export function getWebhookConfigInfo(): WebhookConfigInfo {
     payloadExample: WEBHOOK_PAYLOAD_EXAMPLE,
     keySource: apiKeySource(),
     keySet: true,
+    healthUrl: `${WEBHOOK_BASE_URL}${WEBHOOK_HEALTH_PATH}`,
   };
 }
 
@@ -618,4 +626,62 @@ export async function handleDealClosedWebhook(req: Request): Promise<Response> {
     const msg = err instanceof Error ? err.message : String(err);
     return json({ ok: false, error: "internal", detail: msg }, 500);
   }
+}
+
+/* ------------------------------- health check ------------------------------ */
+
+/**
+ * Public health payload for GET /api/webhooks/health — a minimal, derived
+ * snapshot of the persisted closed-deals store. Exposes ONLY dealId +
+ * timestamps: no API keys, no payloads, no prospect details. It reads the same
+ * store the receiver writes (data/deals/closed-deals.json), so an empty store
+ * reports exactly that — no record means no webhook has been received since
+ * deployment. lastDeliveryError is always null today: the receiver returns a
+ * 4xx/5xx to the caller instead of persisting rejection events; if we ever
+ * record them, this field will surface the latest one.
+ */
+export interface WebhookHealth {
+  status: "ok";
+  endpoint: string;
+  lastReceived: { dealId: string | null; at: string | null };
+  totalReceived: number;
+  lastDeliveryError: string | null;
+  store: string;
+  note: string;
+}
+
+function storeLabel(): string {
+  const p = dealsPath();
+  const rel = path.relative(process.cwd(), p);
+  return rel && !rel.startsWith("..") ? rel : p;
+}
+
+export function webhookHealth(): WebhookHealth {
+  // listClosedDeals() sorts by recordedAt desc, so the newest event is first.
+  // totalReceived counts distinct deals in the store — idempotent repeats
+  // update in place and never add records, so this is the persisted truth.
+  const all = listClosedDeals();
+  const latest = all[0] ?? null;
+  return {
+    status: "ok",
+    endpoint: WEBHOOK_PATH,
+    lastReceived: latest ? { dealId: latest.dealId, at: latest.recordedAt } : { dealId: null, at: null },
+    totalReceived: all.length,
+    lastDeliveryError: null,
+    store: storeLabel(),
+    note: "no record means no webhook has been received since deployment",
+  };
+}
+
+/** GET /api/webhooks/health — public (no API key) by design: it must answer
+ *  for anyone on the team without secrets, and it leaks nothing sensitive. */
+export function handleWebhookHealth(req: Request): Response {
+  if (req.method === "OPTIONS") {
+    // CORS preflight for browser-side health checks.
+    return new Response(null, { status: 204, headers: { ...CORS_HEADERS, "access-control-max-age": "86400" } });
+  }
+  if (req.method !== "GET") {
+    return json({ ok: false, error: "method-not-allowed", detail: "GET required" }, 405);
+  }
+  return json(webhookHealth(), 200);
 }

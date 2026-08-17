@@ -25,6 +25,8 @@ export type WebhookConfigResult =
       payloadExample: import("./webhook").DealClosedPayloadExample;
       keySource: "generated" | "env";
       apiKey: string;
+      /** Public health URL (GET, no auth). */
+      healthUrl: string;
     }
   | { allowed: false };
 

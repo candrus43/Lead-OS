@@ -13,7 +13,7 @@ import handler from "./dist/server/server.js";
 // served OUTSIDE the TanStack handler so the CRM can reach it directly (server
 // fns answer 403 to plain HTTP). Same code is bundled into the app via
 // src/lib/webhookServer.ts for the Settings page + dashboard reads.
-import { WEBHOOK_PATH, handleDealClosedWebhook } from "./src/lib/webhook";
+import { WEBHOOK_PATH, WEBHOOK_HEALTH_PATH, handleDealClosedWebhook, handleWebhookHealth } from "./src/lib/webhook";
 
 // Pinned, NOT read from the environment. The published preview URL
 // (<label>.<PUBLIC_SITE_DOMAIN>) is reverse-proxied to 0.0.0.0:3000 inside the
@@ -49,6 +49,11 @@ for (let attempt = 1; ; attempt++) {
         // Public webhook route — the CRM reaches it with its own API key.
         if (pathname === WEBHOOK_PATH) {
           return handleDealClosedWebhook(req);
+        }
+        // Public health check — no auth, minimal derived state (dealId +
+        // timestamps only). Any team can verify the loop in one call.
+        if (pathname === WEBHOOK_HEALTH_PATH) {
+          return handleWebhookHealth(req);
         }
         if (pathname !== "/") {
           const file = Bun.file(CLIENT_DIR + pathname);
