@@ -23,7 +23,24 @@ const SYSTEM_PROMPT = `You convert natural-language prospect-search queries into
   },
   "notes": string[]
 }
-Rules: state is a 2-letter US code. revenue in USD millions. employees are headcount. Extract only what the query states; null otherwise.`;
+Rules:
+- state is a 2-letter US code (e.g. TX). country is a 2-letter ISO code (e.g. US).
+- revenue in USD millions. employees are headcount.
+- If the query says "near <place>", set location.radiusMiles to 25; for a plain city/state mention (e.g. "in Texas"), leave radiusMiles null.
+- Extract only what the query states; null otherwise.
+- Choose industry/subIndustry by MEANING, not by word overlap (e.g. "hotel groups" -> subIndustry "Hotels"; "restaurant groups" -> "Restaurant Groups"; "commercial real estate developers" -> "Commercial Real Estate Development").
+- Use EXACTLY these canonical strings for "industry" (and the matching canonical "subIndustry" when the query implies one):
+  - Real Estate (subIndustries: Commercial Real Estate Development, Commercial Real Estate, Real Estate Development, Property Management)
+  - Hospitality (subIndustries: Hotels, Hotel Management, Restaurants, Restaurant Groups)
+  - Construction (subIndustries: General Contracting, Commercial Contracting, Homebuilding)
+  - Manufacturing
+  - Distribution
+  - Logistics
+  - Professional Services (subIndustries: Architecture, Engineering)
+  - Healthcare (subIndustries: Senior Living, Skilled Nursing)
+  - Franchise (subIndustries: Multi-unit Operators)
+  - Energy (subIndustries: Oil & Gas)
+  - Retail (subIndustries: Multi-location Retail)`;
 
 export interface LlmParseResult {
   configured: boolean;
