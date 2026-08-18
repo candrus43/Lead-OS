@@ -23,6 +23,10 @@ export interface DiscoveryResult {
   prospects: Prospect[];
   usage: UsageEntry[];
   mock: boolean;
+  /** Descriptive per-provider failures (e.g. "Google Places: REQUEST_DENIED — …"). */
+  providerErrors: string[];
+  /** Provider ids that actually ran a real discovery call (survived gating). */
+  providersAttempted: string[];
 }
 
 export const discoverFromProviders = createServerFn({ method: "POST" })
@@ -33,6 +37,8 @@ export const discoverFromProviders = createServerFn({ method: "POST" })
     const byId = new Map(registry.map((r) => [r.def.id, r]));
     const tracker = new UsageTracker(process.env);
     const out: Prospect[] = [];
+    const providerErrors: string[] = [];
+    const providersAttempted: string[] = [];
     for (const id of ["google-places", "apollo"]) {
       const p = byId.get(id);
       if (!p) continue;
@@ -42,14 +48,17 @@ export const discoverFromProviders = createServerFn({ method: "POST" })
         continue;
       }
       if (p.def.status !== "active" || !isProviderUsable(p.def) || !hasCapability(p, "discoverCompanies")) continue;
+      providersAttempted.push(id);
       try {
         const res = await p.discoverCompanies!(data.filters, { mock: false, tracker });
         if (res?.length) out.push(...res);
-      } catch {
-        // graceful degradation — discovery failure never breaks the run
+      } catch (e) {
+        // graceful degradation — discovery failure never breaks the run, but the
+        // caller is told exactly which provider failed and why (no keys leaked).
+        providerErrors.push(e instanceof Error ? e.message : `${p.def.name}: discovery error`);
       }
     }
-    return { prospects: out, usage: tracker.list(), mock };
+    return { prospects: out, usage: tracker.list(), mock, providerErrors, providersAttempted };
   });
 
 export const runEnrichment = createServerFn({ method: "POST" })
