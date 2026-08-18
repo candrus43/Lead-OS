@@ -35,7 +35,7 @@ const EXAMPLES = [
   "Multi-unit franchise operators in Texas",
 ];
 
-function FiltersPanel({ filters, notes }: { filters: SearchFilters; notes: string[] }) {
+function FiltersPanel({ filters, notes, label }: { filters: SearchFilters; notes: string[]; label?: string }) {
   const items: [string, string][] = [
     ["Industry", filters.industry ?? "—"],
     ["Sub-industry", filters.subIndustry ?? "—"],
@@ -47,6 +47,10 @@ function FiltersPanel({ filters, notes }: { filters: SearchFilters; notes: strin
   ];
   return (
     <div className="mt-4 border-t border-white/5 pt-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <p className="eyebrow">Parsed filters</p>
+        {label && <span className="text-[11px] uppercase tracking-label text-muted">{label}</span>}
+      </div>
       <div className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 lg:grid-cols-4">
         {items.map(([k, v]) => (
           <div key={k} className="min-w-0">
@@ -267,6 +271,12 @@ function SearchPage() {
 
   const preview = useMemo(() => (query.trim() ? parseQuery(query) : null), [query]);
 
+  /** After a run completes, show the ACTUAL parser output the pipeline used —
+   *  server-side (LLM when OPENAI_API_KEY is configured, else rules) — not the
+   *  client-side heuristic preview. Before any run, the heuristic preview stays
+   *  as a live "as you type" hint. */
+  const shown = result ? { filters: result.filters, notes: result.notes } : preview;
+
   /** When landing with a query in the URL (e.g. from a saved search on the
    *  dashboard), run it once on mount. */
   useEffect(() => {
@@ -430,7 +440,13 @@ function SearchPage() {
             Dry run <Badge variant="mock" className="text-[10px]">mock</Badge>
           </label>
         </div>
-        {preview && <FiltersPanel filters={preview.filters} notes={preview.notes} />}
+        {shown && (
+          <FiltersPanel
+            filters={shown.filters}
+            notes={shown.notes}
+            label={result ? parserLabel : "Live preview"}
+          />
+        )}
       </Card>
 
       {/* Secondary tools — compact, one row */}
