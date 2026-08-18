@@ -41,7 +41,14 @@ export function saveImportedProspects(list: Prospect[]): void {
 }
 
 export function addImportedProspects(prospects: Prospect[]): Prospect[] {
-  const next = [...getImportedProspects(), ...prospects];
+  // Dedupe by prospect id — the same company discovered by repeated runs (or a
+  // re-imported CSV row) must not stack duplicate records. Existing records win
+  // so an in-place update (e.g. Website Intelligence re-analysis) is never
+  // clobbered by a fresh preliminary copy.
+  const existing = getImportedProspects();
+  const seen = new Set(existing.map((p) => p.id));
+  const fresh = prospects.filter((p) => !seen.has(p.id));
+  const next = [...existing, ...fresh];
   saveImportedProspects(next);
   return next;
 }

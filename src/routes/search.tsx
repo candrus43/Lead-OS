@@ -417,6 +417,11 @@ function SearchPage() {
       }
       const scored = res.prospects.map((p) => ({ ...p, fit: computeDiscoveryFit(p, filters) }));
       setDiscovered(scored);
+      // Make discovery first-class: persist the found prospects (deduped by id)
+      // so "View", the detail route, and the Prospects page can all resolve them.
+      // Same provenance, mock flags, and preliminary discovery fit — nothing is
+      // enriched, nothing is sent to the CRM. addImportedProspects dedupes by id.
+      addImportedProspects(scored);
       // Name every provider that actually contributed, not just the first
       // result's source (previously Apollo's contribution was invisible).
       const perProvider = new Map<string, number>();
