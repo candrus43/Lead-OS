@@ -100,8 +100,17 @@ export function makeApollo(apiKey: string, mock: boolean): ProviderRuntime {
     ctx.tracker.record("apollo", "discoverCompanies", 1, ctx.mock);
     if (ctx.mock) return [];
     const body: Record<string, unknown> = { page: 1 + Math.floor((filters.offset ?? 0) / 20), per_page: 20 };
-    const kw = filters.keywords?.join(" ") || filters.subIndustry || filters.industry;
-    if (kw) body.q_organization_name = kw;
+    // Apollo's q_organization_name matches company NAMES (fuzzy). An industry
+    // phrase like "Commercial Real Estate Development" matches no real org name,
+    // so discovery returned zero organizations. Explicit company-name keywords
+    // (the user typed a name to look for) keep going to q_organization_name;
+    // industry/subIndustry terms go to q_keywords — Apollo's free-text search —
+    // so real organizations in the segment actually come back. Location and
+    // employee-size filters are intentionally unchanged.
+    const orgNameKw = filters.keywords?.join(" ")?.trim();
+    const industryTerm = filters.subIndustry || filters.industry;
+    if (orgNameKw) body.q_organization_name = orgNameKw;
+    else if (industryTerm) body.q_keywords = industryTerm;
     if (filters.location?.state) body.organization_locations = [{ location_type: "region", location: filters.location.state }];
     else if (filters.location?.city) body.organization_locations = [{ location_type: "city", location: filters.location.city }];
     if (filters.employeeMin !== undefined || filters.employeeMax !== undefined) {

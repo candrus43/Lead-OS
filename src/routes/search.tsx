@@ -13,7 +13,7 @@ import { Badge, Button, Card, Icon, Modal, SectionHead, useModal } from "~/compo
 import { ProspectTable } from "~/components/prospectTable";
 import { parseQuery } from "~/lib/parser";
 import { runPipeline, type PipelineResult } from "~/lib/pipeline";
-import { computeFit, DEFAULT_COST_RULES } from "~/lib/fitScore";
+import { computeDiscoveryFit, DEFAULT_COST_RULES } from "~/lib/fitScore";
 import { addImportedProspects, getImportedProspects, loadJson, getSavedSearches, saveSavedSearch, deleteSavedSearch } from "~/lib/store";
 import { getDryRun, getEnrichedMap, mergeEnrichedResults, saveLastUsage, setDryRun } from "~/lib/store";
 import { discoverFromProviders, runEnrichment } from "~/lib/enrichServer";
@@ -415,11 +415,11 @@ function SearchPage() {
         setDiscovered([]);
         return;
       }
-      const scored = res.prospects.map((p) => ({ ...p, fit: computeFit(p) }));
+      const scored = res.prospects.map((p) => ({ ...p, fit: computeDiscoveryFit(p, filters) }));
       setDiscovered(scored);
       setDiscoverNote(
         `${scored.length} company${scored.length === 1 ? "" : "s"} discovered via ${res.prospects[0].sourceProvider}${res.mock ? " (mock)" : ""}. ` +
-          "Scores shown; employee size is not verified at discovery — enrichment confirms it."
+          "Fit scores are preliminary discovery estimates (segment · location · size + provider signals); enrich the top prospects to confirm fit and pull contacts."
       );
     } catch {
       setDiscoverErrors(["Discovery failed — providers may be unreachable. Results below are from the local pool."]);
@@ -453,14 +453,14 @@ function SearchPage() {
   };
 
   const enrich = async () => {
-    if (!result) return;
+    if (!enrichTargets.length) return;
     setEnriching(true);
     setEnrichError("");
     try {
       const costRules = loadJson("op-leados-costrules", DEFAULT_COST_RULES);
       const already = Object.keys(getEnrichedMap());
       const res = await runEnrichment({
-        data: { prospects: result.prospects, rules: costRules, mock: dryRun, skipIds: already },
+        data: { prospects: enrichTargets, rules: costRules, mock: dryRun, skipIds: already },
       });
       mergeEnrichedResults(res.prospects);
       saveLastUsage(res);
@@ -472,10 +472,32 @@ function SearchPage() {
     }
   };
 
+  /** Everything enrichment can act on this run: discovered companies FIRST
+   *  (they are the fresh results of this search), then pool matches, deduped
+   *  by prospect id so the same company never appears twice. Previously the
+   *  handler sent only result.prospects (the local pool — empty on a fresh
+   *  search), so "Enrich top N" never touched discovery results and Apollo/
+   *  Hunter decision-makers + emails could never come through. */
+  const enrichTargets = useMemo(() => {
+    const seen = new Map<string, Prospect>();
+    for (const p of [...discovered, ...(result?.prospects ?? [])]) {
+      if (!seen.has(p.id)) seen.set(p.id, p);
+    }
+    return [...seen.values()];
+  }, [result, discovered]);
+
+  /** Top-N the button promises: bounded by maxEnrichPerRun (the cost rule that
+   *  actually caps the run) and defaulting to 25 like the original label. */
+  const enrichN = useMemo(() => {
+    if (!enrichTargets.length) return 0;
+    const max = loadJson("op-leados-costrules", DEFAULT_COST_RULES).maxEnrichPerRun ?? 25;
+    return Math.min(enrichTargets.length, Math.max(0, max));
+  }, [enrichTargets]);
+
   const tableProspects = useMemo(() => {
     if (!result) return [];
-    return [...discovered, ...result.prospects];
-  }, [result, discovered]);
+    return enrichTargets; // discovered + pool, deduped — same set enrichment targets
+  }, [enrichTargets, result]);
 
   return (
     <div className="space-y-6">
@@ -550,8 +572,13 @@ function SearchPage() {
               <Button variant="ghost" className="whitespace-nowrap px-3 py-1.5 text-xs" onClick={discover} disabled={discovering}>
                 <Icon name="search" className="h-3.5 w-3.5" /> {discovering ? "Discovering…" : "Discover from providers"}
               </Button>
-              <Button className="whitespace-nowrap px-3 py-1.5 text-xs" onClick={enrich} disabled={enriching || !result.prospects.length}>
-                <Icon name="bolt" className="h-3.5 w-3.5" /> {enriching ? "Enriching…" : `Enrich top ${Math.min(result.prospects.length, 25)} (${dryRun ? "dry run" : "paid"})`}
+              <Button
+                className="whitespace-nowrap px-3 py-1.5 text-xs"
+                onClick={enrich}
+                disabled={enriching || !enrichN}
+              >
+                <Icon name="bolt" className="h-3.5 w-3.5" />{" "}
+                {enriching ? "Enriching…" : enrichN ? `Enrich top ${enrichN} (${dryRun ? "dry run" : "paid"})` : "Enrich top 0 (paid)"}
               </Button>
               <Button variant="ghost" className="whitespace-nowrap px-3 py-1.5 text-xs" onClick={() => { setJustSaved(false); saveModal.openModal(); }}>
                 <Icon name="check" className="h-3.5 w-3.5" /> {justSaved ? "Saved ✓" : "Save this search"}

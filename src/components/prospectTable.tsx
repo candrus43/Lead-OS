@@ -408,6 +408,14 @@ export function ProspectTable({ prospects, showSource = false }: { prospects: Pr
                   <td className="px-4 py-2.5">
                     <div className="flex items-center gap-2">
                       <FitBadge score={view.fit?.score ?? 0} />
+                      {view.fit?.preliminary && (
+                        <span
+                          className="cursor-help text-[10px] uppercase tracking-label text-faint"
+                          title="Discovery estimate — computed from the search match (segment · location · size) plus provider signals. Enrich to refine."
+                        >
+                          est.
+                        </span>
+                      )}
                       {view.fit && view.fit.reasons.length > 0 && (
                         <span
                           className="hidden cursor-help text-muted xl:inline"

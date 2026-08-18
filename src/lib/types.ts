@@ -53,7 +53,10 @@ export interface Signals {
 }
 
 export interface FitReason {
-  signal: keyof Signals;
+  /** signal key when the reason maps to an operational signal; pseudo keys
+   *  ("fit:industry", "fit:location", "fit:size") for discovery-estimate
+   *  reasons that credit the search match itself, not an observed signal. */
+  signal: keyof Signals | `fit:${string}`;
   label: string;
   weight: number; // 0..100 contribution
   note: string;
@@ -67,6 +70,15 @@ export interface FitScore {
   secondaryBuyer: string;
   likelyPainPoint: string;
   thresholdMet: boolean;
+  /**
+   * True when this score is a DISCOVERY-STAGE ESTIMATE rather than the regular
+   * signal-based score: it credits what the provider search itself established
+   * (segment, location, size range) and is meant to be refined by enrichment.
+   * The UI shows a "preliminary" chip next to such scores.
+   */
+  preliminary?: boolean;
+  /** Merely informational — the text() basis "Discovery estimate" vs "Fit". */
+  basis?: "discovery" | "standard";
 }
 
 /** One piece of evidence found on a company's public website. */
