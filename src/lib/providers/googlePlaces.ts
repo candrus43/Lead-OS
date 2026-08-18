@@ -7,6 +7,18 @@
  * (High Confidence — Google publishes this data, but it is not a "Verified"
  * email-style check).
  *
+ * State-level searches: Google's legacy Text Search does not reliably answer a
+ * bare state code ("commercial real estate developer in TX" → ZERO_RESULTS).
+ * When the filters specify a state with NO city, we expand to that state's
+ * largest metros (STATE_METROS) and run one Text Search per metro, deduping
+ * the combined results. A city-level search still runs exactly one query
+ * ("in {city}, {ST}").
+ *
+ * Response status is inspected after every call: OK / ZERO_RESULTS are clean
+ * outcomes (ZERO_RESULTS → honest empty list), every other status throws a
+ * descriptive error (provider name + status + Google's error_message) so the
+ * UI can show why discovery produced nothing.
+ *
  * Assumptions about response shapes (legacy JSON endpoints):
  *   GET /maps/api/place/textsearch/json  → { results: [{ place_id, name,
  *       formatted_address, geometry.location, types }], status }
@@ -23,6 +35,40 @@ import { slug } from "./util";
 
 const TEXT_SEARCH = "https://maps.googleapis.com/maps/api/place/textsearch/json";
 const DETAILS = "https://maps.googleapis.com/maps/api/place/details/json";
+
+/** Hard cap on raw results kept across all metro queries (pre/post dedupe). */
+const MAX_DISCOVER_RESULTS = 60;
+/** Page size per discovery call — matches the original 20-per-query slice. */
+const PAGE_SIZE = 20;
+
+/**
+ * State → largest metros. Used only when a discovery has a state but no city:
+ * Google Text Search answers cities, not bare state codes. States most relevant
+ * to Operion are covered; anything else falls back to a single query with no
+ * location clause ([""]).
+ */
+const STATE_METROS: Record<string, string[]> = {
+  TX: ["Dallas", "Houston", "Austin", "San Antonio", "Fort Worth"],
+  FL: ["Miami", "Tampa", "Orlando", "Jacksonville", "Fort Lauderdale"],
+  GA: ["Atlanta", "Savannah", "Augusta", "Columbus", "Macon"],
+  NC: ["Charlotte", "Raleigh", "Greensboro", "Durham", "Wilmington"],
+  SC: ["Greenville", "Columbia", "Charleston", "Spartanburg", "Myrtle Beach"],
+  TN: ["Nashville", "Memphis", "Knoxville", "Chattanooga", "Franklin"],
+  VA: ["Richmond", "Virginia Beach", "Norfolk", "Arlington", "Alexandria"],
+  CA: ["Los Angeles", "San Francisco", "San Diego", "San Jose", "Sacramento"],
+  AZ: ["Phoenix", "Scottsdale", "Tucson", "Mesa", "Tempe"],
+  NV: ["Las Vegas", "Henderson", "Reno", "North Las Vegas", "Paradise"],
+  CO: ["Denver", "Colorado Springs", "Aurora", "Boulder", "Fort Collins"],
+  IL: ["Chicago", "Naperville", "Rockford", "Springfield", "Peoria"],
+  OH: ["Columbus", "Cleveland", "Cincinnati", "Toledo", "Akron"],
+  MI: ["Detroit", "Grand Rapids", "Warren", "Sterling Heights", "Ann Arbor"],
+  PA: ["Philadelphia", "Pittsburgh", "Allentown", "Reading", "Scranton"],
+  NY: ["New York", "Buffalo", "Rochester", "Albany", "Syracuse"],
+  NJ: ["Newark", "Jersey City", "Paterson", "Trenton", "Camden"],
+  MA: ["Boston", "Springfield", "Cambridge", "Lowell", "Worcester"],
+  WA: ["Seattle", "Spokane", "Tacoma", "Bellevue", "Vancouver"],
+  OR: ["Portland", "Salem", "Eugene", "Gresham", "Bend"],
+};
 
 interface PlaceResult {
   place_id?: string;
@@ -47,6 +93,32 @@ interface TextSearchResponse {
 interface DetailsResponse {
   result?: PlaceResult;
   status?: string;
+}
+
+/** Human-readable hint appended to common Google Places error statuses. */
+const STATUS_HINTS: Record<string, string> = {
+  REQUEST_DENIED: "the API key is invalid or the Places API is not enabled, check your Google Cloud project",
+  OVER_QUERY_LIMIT: "the API quota was exceeded — wait a bit and retry, or raise the quota in Google Cloud",
+  INVALID_REQUEST: "the query was malformed — try a different city or industry term",
+  NOT_FOUND: "the indicated location could not be found — try a different city",
+  UNKNOWN_ERROR: "Google returned an unknown error — retry in a moment",
+};
+
+/**
+ * Inspect a Text Search response status. OK and ZERO_RESULTS are clean (the
+ * empty-list case genuinely means "no matches"); every other status is a
+ * provider failure and is reported as a descriptive error so the UI can show
+ * it. A missing response (network/timeout) is also a provider failure.
+ */
+function assertTextSearchOk(res: TextSearchResponse | undefined, query: string): void {
+  if (res == null) {
+    throw new Error(`Google Places: no response from the Places API (network or quota error) for "${query}"`);
+  }
+  const status = res.status ?? "";
+  if (!status || status === "OK" || status === "ZERO_RESULTS") return;
+  const hint = STATUS_HINTS[status];
+  const detail = res.error_message ? ` ${res.error_message}` : "";
+  throw new Error(`Google Places: ${status}${hint ? ` — ${hint}` : ""}${detail}`);
 }
 
 const INDUSTRY_QUERIES: Record<string, string[]> = {
@@ -79,6 +151,27 @@ function queryTerms(f: SearchFilters): string[] {
     if (mapped) return [mapped];
   }
   return base;
+}
+
+/**
+ * Discover locations for a search filter:
+ *  - city present → exactly one query on "{city}, {state}" (unchanged behavior);
+ *  - state only    → expand to that state's largest metros (STATE_METROS);
+ *  - neither       → one query with no location clause (unchanged behavior).
+ * A bare state code is never sent to Google as the whole location.
+ */
+function expandLocations(loc: SearchFilters["location"]): Array<{ city: string; state: string }> {
+  if (!loc?.state) {
+    return [{ city: loc?.city ?? "", state: "" }];
+  }
+  const state = loc.state.toUpperCase();
+  if (loc.city) {
+    return [{ city: loc.city, state }];
+  }
+  const metros = STATE_METROS[state] ?? [""];
+  // A bare state must never be sent as the whole location; unknown states get
+  // a single query with no location clause (entry "" → state dropped too).
+  return metros.map((city) => ({ city, state: city === "" ? "" : state }));
 }
 
 /** Best-effort city/state parse from a Google formatted address. */
@@ -137,23 +230,59 @@ export function makeGooglePlaces(apiKey: string, mock: boolean): ProviderRuntime
     ctx.tracker.record("google-places", "discoverCompanies", 1, ctx.mock);
     if (ctx.mock) return [];
     const terms = queryTerms(filters);
-    const loc = filters.location;
-    const locationText = `${loc?.city ?? ""}${loc?.city && loc?.state ? ", " : ""}${loc?.state ?? ""}`.trim();
-    const query = [terms[0], locationText ? `in ${locationText}` : ""].filter(Boolean).join(" ");
-    const res = await fetchJson<TextSearchResponse>(`${TEXT_SEARCH}?query=${encodeURIComponent(query)}&key=${apiKey}`);
-    const results = res?.results ?? [];
+    const locations = expandLocations(filters.location);
     const offset = filters.offset ?? 0;
-    return results
-      .filter((r) => r.name && r.business_status !== "CLOSED_PERMANENTLY" && r.business_status !== "CLOSED_TEMPORARILY")
-      .slice(offset, offset + 20)
-      .map((r, i) => {
+
+    // filter → collect → dedupe → slice, applied consistently across queries.
+    const collected: Array<{ r: PlaceResult; loc: { city: string; state: string } }> = [];
+    for (const loc of locations) {
+      const locationText = [loc.city, loc.state].filter(Boolean).join(", ");
+      const query = [terms[0], locationText ? `in ${locationText}` : ""].filter(Boolean).join(" ");
+      const res = await fetchJson<TextSearchResponse>(`${TEXT_SEARCH}?query=${encodeURIComponent(query)}&key=${apiKey}`);
+      assertTextSearchOk(res, query);
+      const clean = (res?.results ?? []).filter(
+        (r) => r.name && r.business_status !== "CLOSED_PERMANENTLY" && r.business_status !== "CLOSED_TEMPORARILY"
+      );
+      for (const r of clean) {
+        collected.push({ r, loc });
+        if (collected.length >= MAX_DISCOVER_RESULTS) break;
+      }
+      if (collected.length >= MAX_DISCOVER_RESULTS) break;
+    }
+
+    // Dedupe by place_id (fall back to normalized name — the places that lack a
+    // place_id also lack stable identity, so city+name keys it).
+    const seen = new Set<string>();
+    const deduped = collected.filter(({ r }) => {
+      const key = r.place_id ? `id:${r.place_id}` : `name:${slug(r.name ?? "").toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    return deduped
+      .slice(offset, offset + PAGE_SIZE)
+      .map(({ r, loc }, i) => {
         const addr = parseAddress(r.formatted_address);
         const signals = signalsFromTypes(r.types);
+        // Location comes from Google's address when it parsed; the metro the
+        // result came from fills any gap (never fabricated — it's where search
+        // actually ran). Metro-filled locations are marked Likely, not High
+        // Confidence, because the street-level city wasn't returned by Google.
+        const city = addr.city || loc.city;
+        const state = addr.state || loc.state;
+        const gotRealAddress = !!addr.city || !!addr.state;
         return {
           id: `google-${r.place_id ?? slug(r.name ?? "")}-${i}`,
           companyName: { value: r.name ?? "Unknown", source: "google-places", capturedAt: now(), confidence: 0.9, verificationStatus: "High Confidence" },
           industry: { value: filters.industry ?? "Unknown", source: "google-places", capturedAt: now(), confidence: 0.5, verificationStatus: "Likely" },
-          location: { value: addr, source: "google-places", capturedAt: now(), confidence: addr.city || addr.state ? 0.8 : 0.3, verificationStatus: addr.city || addr.state ? "High Confidence" : "Likely" },
+          location: {
+            value: { city, state, country: addr.country },
+            source: "google-places",
+            capturedAt: now(),
+            confidence: gotRealAddress ? 0.8 : city || state ? 0.6 : 0.3,
+            verificationStatus: gotRealAddress ? "High Confidence" : city || state ? "Likely" : "Unknown",
+          },
           signals: {
             multipleEntities: false,
             multipleLocations: false,

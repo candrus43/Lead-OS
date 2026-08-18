@@ -261,6 +261,7 @@ function SearchPage() {
   const [discovering, setDiscovering] = useState(false);
   const [discovered, setDiscovered] = useState<Prospect[]>([]);
   const [discoverNote, setDiscoverNote] = useState("");
+  const [discoverErrors, setDiscoverErrors] = useState<string[]>([]);
   const [enriching, setEnriching] = useState(false);
   const [report, setReport] = useState<EnrichmentRunReport | null>(null);
   const [enrichError, setEnrichError] = useState("");
@@ -317,6 +318,7 @@ function SearchPage() {
     setDiscovered([]);
     setReport(null);
     setDiscoverNote("");
+    setDiscoverErrors([]);
     try {
       const res = await runPipeline({ query: text, limit: 50 });
       setResult(res);
@@ -342,13 +344,19 @@ function SearchPage() {
     if (!result) return;
     setDiscovering(true);
     setDiscoverNote("");
+    setDiscoverErrors([]);
     try {
       const res = await discoverFromProviders({ data: { filters: result.filters, mock: dryRun } });
+      setDiscoverErrors(res.providerErrors ?? []);
       if (!res.prospects.length) {
         setDiscoverNote(
           dryRun
             ? "Dry-run discovery returned nothing to show."
-            : "No provider is configured (add GOOGLE_PLACES_API_KEY or APOLLO_API_KEY in Secrets) — or turn on Dry run in Settings to see mock discovery."
+            : res.providerErrors?.length
+              ? "Discovery returned no companies — see the provider message above."
+              : res.providersAttempted?.length
+                ? "Providers ran but found no companies for these filters — try a larger city, a different industry term, or fewer filters."
+                : "No provider is configured (add GOOGLE_PLACES_API_KEY or APOLLO_API_KEY in Secrets) — or turn on Dry run in Settings to see mock discovery."
         );
         setDiscovered([]);
         return;
@@ -360,7 +368,7 @@ function SearchPage() {
           "Scores shown; employee size is not verified at discovery — enrichment confirms it."
       );
     } catch {
-      setDiscoverNote("Discovery failed — providers may be unreachable. Results below are from the local pool.");
+      setDiscoverErrors(["Discovery failed — providers may be unreachable. Results below are from the local pool."]);
       setDiscovered([]);
     } finally {
       setDiscovering(false);
@@ -477,11 +485,21 @@ function SearchPage() {
           {dryRun && <p className="text-xs text-muted"><Badge variant="mock" className="text-[10px]">mock</Badge> providers active — no credits spent.</p>}
           {enrichError && <span className="text-xs text-danger">{enrichError}</span>}
 
+          {discoverErrors.length > 0 && (
+            <div className="rounded-xl border border-danger/30 bg-danger/10 p-3">
+              <p className="text-xs font-semibold text-danger">
+                Provider discovery error{discoverErrors.length > 1 ? "s" : ""}
+              </p>
+              {discoverErrors.map((m, i) => (
+                <p key={i} className="mt-1 text-xs text-danger/90">{m}</p>
+              ))}
+            </div>
+          )}
           {discoverNote && <p className="text-xs text-muted">{discoverNote}</p>}
           {report && <EnrichmentBanner report={report} />}
 
           <ProspectTable prospects={tableProspects} showSource />
-          {result.totalScored === 0 && discovered.length === 0 && (
+          {result.totalScored === 0 && discovered.length === 0 && discoverErrors.length === 0 && (
             <Card className="p-5 text-center text-sm text-muted">
               Nothing matched. <Link to="/providers" className="text-accent-light underline">Import a CSV</Link> to bring your own prospects, or hit <span className="text-fg">Discover from providers</span> above.
             </Card>
