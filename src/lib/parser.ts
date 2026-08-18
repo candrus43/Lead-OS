@@ -60,6 +60,12 @@ const STATE_ABBR: Record<string, string> = {
   vermont: "VT", maine: "ME", "rhode island": "RI", connecticut: "CT",
 };
 
+/** 2-letter state abbreviations (lowercased) → code, derived from STATE_ABBR
+ *  so "in austin, tx" resolves exactly like "in austin, texas". */
+const STATE_CODES: Record<string, string> = Object.fromEntries(
+  Object.entries(STATE_ABBR).map(([, code]) => [code.toLowerCase(), code])
+);
+
 const TITLES = [
   "ceo", "president", "chief operating officer", "coo", "chief financial officer", "cfo",
   "chief technology officer", "cto", "vp", "vice president", "director", "head of",
@@ -121,22 +127,33 @@ export function parseQuery(raw: string): ParsedQuery {
     }
   }
 
-  // Location: "in Texas", "in Austin, TX", "near Dallas"
-  const inMatch = lower.match(/in\s+(?:the\s+)?([a-z\s,]+?)(?:\s+(?:with|that|and|and\s+have|having))?$/);
-  const nearMatch = lower.match(/near\s+([a-z\s]+?)(?:\s+(?:with|that|and|having))?$/);
-  const locText = (nearMatch?.[1] || inMatch?.[1] || "").trim().replace(/,$/, "");
+  // Location: "in Texas", "in Austin, TX", "near Dallas". Matched ANYWHERE in
+  // the query (not end-anchored) with a bounded capture that stops at a clause
+  // boundary ("with / that / having / and" followed by another word), at a
+  // number, or at the end of the string. This keeps trailing clauses — "with
+  // 20–200 employees", "with high project volume", "with 50+ employees" — from
+  // killing the match or leaking into the captured location text.
+  // The "and" boundary only fires when "and" is followed by a word boundary, so
+  // "in Texas" style queries (no trailing clause) still parse via the end-of-
+  // string alternative, and multi-word states ("north carolina") are untouched.
+  const locMatch = lower.match(
+    /\b(?:in|near)\s+(?:the\s+)?([a-z][a-z\s,'.-]*?)(?=\s+(?:with|that|having|and)\b|\s+\d|\s*$)/
+  );
+  const isNear = locMatch ? /^near\b/.test(locMatch[0]) : false;
+  const locText = (locMatch?.[1] || "").trim().replace(/,$/, "");
   if (locText) {
     const parts = locText.split(",").map((p) => p.trim());
     const stateName = parts[parts.length - 1]?.toLowerCase();
-    const state = STATE_ABBR[stateName];
-    const city = parts.length > 1 ? parts.slice(0, -1).join(", ") : state ? undefined : locText;
+    const state = STATE_ABBR[stateName] ?? STATE_CODES[stateName];
+    const rawCity = parts.length > 1 ? parts.slice(0, -1).join(", ") : state ? undefined : locText;
+    const city = rawCity ? rawCity.replace(/\b\w/g, (c) => c.toUpperCase()) : undefined;
     filters.location = { city, state, country: "US" };
     notes.push(
       state
         ? `Location: ${city ? `${city}, ` : ""}${stateName.toUpperCase()}`
-        : `Location: ${locText}`
+        : `Location: ${city}`
     );
-    if (nearMatch) filters.location.radiusMiles = 25;
+    if (isNear) filters.location.radiusMiles = 25;
   }
 
   // Employees
