@@ -55,7 +55,10 @@ export const discoverFromProviders = createServerFn({ method: "POST" })
       } catch (e) {
         // graceful degradation — discovery failure never breaks the run, but the
         // caller is told exactly which provider failed and why (no keys leaked).
-        providerErrors.push(e instanceof Error ? e.message : `${p.def.name}: discovery error`);
+        // Google Places already prefixes its own errors; Apollo's thrown
+        // "HTTP 403: …" message does not, so add the provider name when missing.
+        const raw = e instanceof Error ? e.message : `${p.def.name}: discovery error`;
+        providerErrors.push(raw.startsWith(p.def.name) ? raw : `${p.def.name}: ${raw}`);
       }
     }
     return { prospects: out, usage: tracker.list(), mock, providerErrors, providersAttempted };

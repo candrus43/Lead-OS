@@ -116,7 +116,11 @@ export function makeApollo(apiKey: string, mock: boolean): ProviderRuntime {
     if (filters.employeeMin !== undefined || filters.employeeMax !== undefined) {
       body.organization_num_employees_ranges = [[String(filters.employeeMin ?? 1), String(filters.employeeMax ?? 100000)]];
     }
-    const res = await fetchJson<ApolloResponse>(`${BASE}/mixed_companies/search`, { method: "POST", headers: headers(apiKey), body });
+    // throwOnError so an API refusal (e.g. "not included in your Free plan",
+    // HTTP 403) surfaces in the discovery error panel instead of silently
+    // degrading to zero results. The caller (enrichServer.ts discovery loop)
+    // catches and reports it; a failing provider never breaks the run.
+    const res = await fetchJson<ApolloResponse>(`${BASE}/mixed_companies/search`, { method: "POST", headers: headers(apiKey), body, throwOnError: true });
     const orgs = res?.organizations ?? [];
     return orgs
       .filter((o) => o.name)
@@ -183,7 +187,7 @@ export function makeApollo(apiKey: string, mock: boolean): ProviderRuntime {
       body.q_organization_name = p.companyName.value;
       if (p.location.value.state) body.organization_locations = [{ location_type: "region", location: p.location.value.state }];
     }
-    const res = await fetchJson<ApolloResponse>(`${BASE}/mixed_companies/search`, { method: "POST", headers: headers(apiKey), body });
+    const res = await fetchJson<ApolloResponse>(`${BASE}/mixed_companies/search`, { method: "POST", headers: headers(apiKey), body, throwOnError: true });
     const o = res?.organizations?.[0];
     if (!o?.name) return undefined;
     const out: CompanyEnrichment = {};
@@ -215,7 +219,7 @@ export function makeApollo(apiKey: string, mock: boolean): ProviderRuntime {
     if (domain) body.organization_domains = [domain];
     else body.organization_name = p.companyName.value;
     body.person_titles = ["Chief Executive Officer", "Chief Operating Officer", "VP Operations", "Chief Financial Officer", "Director of Operations"];
-    const res = await fetchJson<ApolloResponse>(`${BASE}/mixed_people/search`, { method: "POST", headers: headers(apiKey), body });
+    const res = await fetchJson<ApolloResponse>(`${BASE}/mixed_people/search`, { method: "POST", headers: headers(apiKey), body, throwOnError: true });
     const people = res?.people ?? [];
     return people
       .filter((d) => d.first_name || d.last_name || d.name || d.title)
@@ -246,7 +250,7 @@ export function makeApollo(apiKey: string, mock: boolean): ProviderRuntime {
     if (!domain) return undefined;
     const name = contact.fullName.value;
     const body: Record<string, unknown> = { page: 1, per_page: 1, organization_domains: [domain], q_keywords: name === "Unknown" ? undefined : name };
-    const res = await fetchJson<ApolloResponse>(`${BASE}/mixed_people/search`, { method: "POST", headers: headers(apiKey), body });
+    const res = await fetchJson<ApolloResponse>(`${BASE}/mixed_people/search`, { method: "POST", headers: headers(apiKey), body, throwOnError: true });
     const email = res?.people?.find((d) => d.email)?.email;
     if (!email) return undefined;
     return { value: email, source: "apollo", capturedAt: now(), confidence: 0.6, verificationStatus: "Unverified" };
