@@ -417,8 +417,13 @@ function SearchPage() {
       }
       const scored = res.prospects.map((p) => ({ ...p, fit: computeDiscoveryFit(p, filters) }));
       setDiscovered(scored);
+      // Name every provider that actually contributed, not just the first
+      // result's source (previously Apollo's contribution was invisible).
+      const perProvider = new Map<string, number>();
+      for (const p of res.prospects) perProvider.set(p.sourceProvider, (perProvider.get(p.sourceProvider) ?? 0) + 1);
+      const providerLabel = [...perProvider.entries()].map(([prov, n]) => `${n} via ${prov}`).join(" · ");
       setDiscoverNote(
-        `${scored.length} company${scored.length === 1 ? "" : "s"} discovered via ${res.prospects[0].sourceProvider}${res.mock ? " (mock)" : ""}. ` +
+        `${scored.length} company${scored.length === 1 ? "" : "s"} discovered — ${providerLabel}${res.mock ? " (mock)" : ""}. ` +
           "Fit scores are preliminary discovery estimates (segment · location · size + provider signals); enrich the top prospects to confirm fit and pull contacts."
       );
     } catch {
