@@ -18,6 +18,7 @@ import { addImportedProspects, getImportedProspects, loadJson, getSavedSearches,
 import { getDryRun, getEnrichedMap, mergeEnrichedResults, saveLastUsage, setDryRun } from "~/lib/store";
 import { discoverFromProviders, runEnrichment } from "~/lib/enrichServer";
 import { analyzeCompanyWebsite } from "~/lib/siteIntelServer";
+import { getRuntimeConfig, type RuntimeConfig } from "~/lib/runtime";
 import { domainOf } from "~/lib/providers/http";
 import { formatCost } from "~/lib/enrich";
 import type { EnrichmentRunReport } from "~/lib/enrich";
@@ -270,6 +271,45 @@ function SearchPage() {
   const [saveName, setSaveName] = useState("");
   const [justSaved, setJustSaved] = useState(false);
 
+  /** Provider registry status from the server (booleans + defs only — no keys),
+   *  so we know whether discovery can produce anything before auto-running it. */
+  const [runtime, setRuntime] = useState<RuntimeConfig | null>(null);
+  /** In-flight guard mirroring `discovering` — safe to read synchronously from
+   *  async continuations before React re-renders. */
+  const discoveringRef = useRef(false);
+  /** Fingerprint of the search that discovery last ran for (auto OR manual) —
+   *  auto-discovery never runs twice for the same search. */
+  const discoveryRanKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getRuntimeConfig()
+      .then((r) => {
+        if (alive) setRuntime(r);
+      })
+      .catch(() => {
+        // Runtime config unavailable — auto-discovery stays off; the manual
+        // "Discover from providers" button keeps working as before.
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /** True when Google Places or Apollo can currently produce results: a real
+   *  server key ("active"), server mock mode ("mock"), or the client Dry-run
+   *  toggle (servers get mock providers for the run). "not-configured" plus
+   *  dry-run off means discovery would find nothing — keep the manual flow. */
+  const discoveryUsable = useMemo(() => {
+    if (!runtime) return false;
+    return runtime.providers.some(
+      (p) =>
+        (p.id === "google-places" || p.id === "apollo") &&
+        (p.status === "active" || p.status === "mock" || dryRun) &&
+        p.capabilities.includes("discoverCompanies")
+    );
+  }, [runtime, dryRun]);
+
   const preview = useMemo(() => (query.trim() ? parseQuery(query) : null), [query]);
 
   /** After a run completes, show the ACTUAL parser output the pipeline used —
@@ -323,6 +363,9 @@ function SearchPage() {
       const res = await runPipeline({ query: text, limit: 50 });
       setResult(res);
       setParserLabel(res.parserUsed === "llm" ? "LLM parser" : res.parserUsed === "rules" ? "Rule-based parser" : "No filters — showing all");
+      // One action, one flow: if the pool produced nothing and discovery can
+      // produce something, run it now instead of dead-ending at "Nothing matched".
+      await maybeAutoDiscover(res);
     } finally {
       setLoading(false);
     }
@@ -340,13 +383,24 @@ function SearchPage() {
     void run(text);
   };
 
-  const discover = async () => {
-    if (!result) return;
+  /** Discovery — the exact flow the manual button has always run, shared so the
+   *  auto-trigger after an empty search produces identical notes, error panels,
+   *  and empty states. Never double-runs: guarded by the in-flight ref and by
+   *  the per-search key (records both auto and manual runs). */
+  /** Identity of a discovery run: the parsed filters + the mock flag. Running
+   *  discovery for the same inputs twice adds nothing, so auto-discovery is
+   *  keyed on this. */
+  const discoveryKey = (filters: SearchFilters, mock: boolean) => `${JSON.stringify(filters)}|${mock ? "mock" : "real"}`;
+
+  const runDiscover = async (filters: SearchFilters, key: string) => {
+    if (discoveringRef.current) return;
+    discoveringRef.current = true;
+    discoveryRanKeyRef.current = key;
     setDiscovering(true);
     setDiscoverNote("");
     setDiscoverErrors([]);
     try {
-      const res = await discoverFromProviders({ data: { filters: result.filters, mock: dryRun } });
+      const res = await discoverFromProviders({ data: { filters, mock: dryRun } });
       setDiscoverErrors(res.providerErrors ?? []);
       if (!res.prospects.length) {
         setDiscoverNote(
@@ -371,8 +425,31 @@ function SearchPage() {
       setDiscoverErrors(["Discovery failed — providers may be unreachable. Results below are from the local pool."]);
       setDiscovered([]);
     } finally {
+      discoveringRef.current = false;
       setDiscovering(false);
     }
+  };
+
+  /** Manual button — always runs for the current search, even if it already ran
+   *  automatically (the user asked for more results). */
+  const discover = () => {
+    if (!result || discoveringRef.current) return;
+    void runDiscover(result.filters, discoveryKey(result.filters, dryRun));
+  };
+
+  /** Auto-discovery: after a run scored zero pool prospects, continue straight
+   *  into discovery when a provider can produce results — so an empty pool never
+   *  leaves the owner at a "Nothing matched" dead end. Skipped when no provider
+   *  is configured ("No provider is configured…" message preserved), when
+   *  discovery is already in flight, or when discovery already ran for this
+   *  search (same filters + same mock flag). */
+  const maybeAutoDiscover = async (res: PipelineResult) => {
+    if (res.totalScored !== 0) return; // pool had matches — manual discovery only
+    if (discoveringRef.current) return; // discovery in flight
+    const key = discoveryKey(res.filters, dryRun);
+    if (discoveryRanKeyRef.current === key) return; // already ran for this search
+    if (!discoveryUsable) return; // no provider configured / no dry run
+    await runDiscover(res.filters, key);
   };
 
   const enrich = async () => {
