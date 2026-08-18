@@ -205,7 +205,7 @@ export async function runWaterfall(input: Prospect[], opts: WaterfallOptions): P
       results.push({ prospect: raw, cost: 0, steps: [], mock, enrichedAt: now(), reason: "skipped", skipReason: stoppedReason });
       continue;
     }
-    const p: Prospect = { ...raw, fit: computeFit(raw) };
+    const p: Prospect = { ...raw, fit: raw.fit ?? computeFit(raw) };
     const score = p.fit!.score;
 
     const skip = (reason: string): void => {
